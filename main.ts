@@ -1,137 +1,162 @@
-import { strict } from 'assert'
-import { App, Modal, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian'
-import { MarkdownView, TFile } from 'obsidian'
+import { strict } from "assert";
+import {
+  App,
+  Modal,
+  Notice,
+  Plugin,
+  PluginSettingTab,
+  Setting,
+} from "obsidian";
+import { MarkdownView, TFile } from "obsidian";
 
 export default class WikilinksToMdlinks extends Plugin {
-	onload() {
-		console.log('loading wikilinks-to-mdlinks plugin...')
+  onload() {
+    console.log("loading wikilinks-to-mdlinks plugin...");
+    this.addCommand({
+      id: "toggle-wiki-md-links",
+      name: "Toggle selected wikilink to markdown link and vice versa",
+      checkCallback: (checking: boolean) => {
+        const currentView =
+          this.app.workspace.getActiveLeafOfViewType(MarkdownView);
+        if (currentView == null || currentView.getMode() !== "source") {
+          return false;
+        }
+        if (!checking) {
+          this.toggleLink();
+        }
+        return true;
+      },
+      hotkeys: [
+        {
+          modifiers: ["Mod", "Shift"],
+          key: "L",
+        },
+      ],
+    });
+  }
 
-		this.addCommand({
-			id: "toggle-wiki-md-links",
-			name: "Toggle selected wikilink to markdown link and vice versa",
-			checkCallback: (checking: boolean) => {
-				const currentView = this.app.workspace.getActiveLeafOfViewType(MarkdownView)
+  onunload() {
+    console.log("unloading wikilinks-to-mdlinks plugin");
+  }
 
-				if ((currentView == null) || (currentView.getMode() !== 'source'))  {
-					return false
-				}
+  toggleLink() {
+    const currentView =
+      this.app.workspace.getActiveLeafOfViewType(MarkdownView);
+    const editor = currentView.sourceMode.cmEditor;
+    const cursor = editor.getCursor();
+    const line = editor.getDoc().getLine(cursor.line);
+    const regexHasExtension = /^([^\\]*)\.(\w+)$/;
+    const regexWiki = /\[\[([^\]]+)\]\]/;
+    const regexParenthesis = /\((.*?)\)/;
+    const regexWikiGlobal = /\[\[([^\]]*)\]\]/g;
+    const regexMdGlobal = /\[([^\]]*)\]\(([^\(]*)\)/g;
 
-				if (!checking) {
-					this.toggleLink()
-				}
+    let wikiMatches = line.match(regexWikiGlobal);
+    let mdMatches = line.match(regexMdGlobal);
+    let ifFoundMatch = false;
 
-				return true
-			},
-			hotkeys: [{
-				modifiers: ["Mod", "Shift"],
-				key: "L"
-			}]
-		})
+    // If there are wikiMatches find if the cursor is inside the selected text
+    let i = 0;
+    if (wikiMatches) {
+      for (const item of wikiMatches) {
+        let temp = line.slice(i, line.length);
+        let index = i + temp.indexOf(item);
+        let indexEnd = index + item.length;
+        i = indexEnd;
 
-	}
+        if (cursor.ch >= index && cursor.ch <= indexEnd) {
+          ifFoundMatch = true;
+          let text = item.match(regexWiki)[1];
 
-	onunload() {
-		console.log('unloading wikilinks-to-mdlinks plugin')
-	}
+          // Split display text from link path if using pipe syntax
+          let displayText = text;
+          let linkPath = text;
+          if (text.includes("|")) {
+            const parts = text.split("|");
+            linkPath = parts[0];
+            displayText = parts[1];
+          }
 
-	toggleLink() {
-		const currentView = this.app.workspace.getActiveLeafOfViewType(MarkdownView)
-		const editor = currentView.sourceMode.cmEditor
+          // Try to find the actual file in the vault
+          const file = this.app.metadataCache.getFirstLinkpathDest(
+            linkPath,
+            currentView.file.path
+          );
 
+          let finalPath = linkPath;
+          if (file) {
+            // Use the actual file path relative to the vault root with leading slash
+            finalPath = "/" + file.path;
+          } else {
+            // File not found, but check if it has an extension
+            const matches = linkPath.match(regexHasExtension);
+            if (!matches) {
+              finalPath = "/" + linkPath + ".md";
+            } else {
+              finalPath = "/" + linkPath;
+            }
+          }
 
-		const cursor = editor.getCursor()
-		const line = editor.getDoc().getLine(cursor.line);
+          const encodedPath = encodeURI(finalPath);
+          let newItem = `[${displayText}](${encodedPath})`;
 
-		const regexHasExtension = /^([^\\]*)\.(\w+)$/
+          const cursorStart = {
+            line: cursor.line,
+            ch: index,
+          };
+          const cursorEnd = {
+            line: cursor.line,
+            ch: indexEnd,
+          };
+          editor.replaceRange(newItem, cursorStart, cursorEnd);
+        }
+      }
+    }
 
-		const regexWiki = /\[\[([^\]]+)\]\]/
-		const regexParenthesis = /\((.*?)\)/
-		const regexWikiGlobal = /\[\[([^\]]*)\]\]/g
-		const regexMdGlobal = /\[([^\]]*)\]\(([^\(]*)\)/g
+    i = 0;
+    if (ifFoundMatch == false) {
+      if (mdMatches) {
+        for (const item of mdMatches) {
+          let temp = line.slice(i, line.length);
+          let index = i + temp.indexOf(item);
+          let indexEnd = index + item.length;
+          i = indexEnd;
 
-		let wikiMatches = line.match(regexWikiGlobal)
-		let mdMatches = line.match(regexMdGlobal)
+          if (cursor.ch >= index && cursor.ch <= indexEnd) {
+            ifFoundMatch = true;
+            let text = item.match(regexParenthesis)[1];
+            text = decodeURI(text);
 
-		let ifFoundMatch = false
+            // Remove the folder path for wikilink format
+            let filename = text;
+            if (text.includes("/")) {
+              const parts = text.split("/");
+              filename = parts[parts.length - 1];
+            }
 
-		// If there are wikiMatches find if the cursor is inside the selected text
-		let i = 0
-		if (wikiMatches) {
-			for (const item of wikiMatches) {
+            // Check if it is a markdown file
+            const matches = filename.match(regexHasExtension);
+            if (matches) {
+              const filenameWithoutExt = matches[1];
+              const extension = matches[2];
+              if (extension == "md") {
+                filename = filenameWithoutExt;
+              }
+            }
 
-				let temp = line.slice(i, line.length)
-
-				let index = i + temp.indexOf(item)
-				let indexEnd = index + item.length
-
-				i = indexEnd
-				if ((cursor.ch >= index ) && (cursor.ch <= indexEnd )) {
-					ifFoundMatch = true
-					let text = item.match(regexWiki)[1]
-					// Check if it is a markdown file
-					const matches = text.match(regexHasExtension);
-					let newText = text
-					if (matches) {
-						const filename = matches[1]
-						const extension = matches[2]
-					} else {
-						newText = newText + ".md"
-					}
-					const encodedText = encodeURI(newText)
-					let newItem = `[${text}](${encodedText})`
-
-					const cursorStart = {
-						line: cursor.line,
-						ch: index
-					}
-					const cursorEnd = {
-						line: cursor.line,
-						ch: indexEnd
-					}
-
-					editor.replaceRange(newItem, cursorStart, cursorEnd);
-				}
-			}
-		}
-
-		i = 0
-		if (ifFoundMatch == false) {
-			if (mdMatches) {
-				for (const item of mdMatches) {
-					let temp = line.slice(i, line.length)
-					let index = i + temp.indexOf(item)
-					let indexEnd = index + item.length
-					i = indexEnd
-
-					if ((cursor.ch >= index ) && (cursor.ch <= indexEnd )) {
-						ifFoundMatch = true
-						let text = item.match(regexParenthesis)[1]
-						text = decodeURI(text)
-
-						// Check if it is a markdown file
-						const matches = text.match(regexHasExtension);
-						if (matches) {
-							const filename = matches[1]
-							const extension = matches[2]
-
-							if (extension == 'md') {
-								text = filename
-							}
-						}
-						let newItem = `[[${text}]]`
-
-						const cursorStart = {
-							line: cursor.line,
-							ch: index
-						}
-						const cursorEnd = {
-							line: cursor.line,
-							ch: indexEnd
-						}
-						editor.replaceRange(newItem, cursorStart, cursorEnd);
-					}
-				}
-			}
-		}
-	}
+            let newItem = `[[${filename}]]`;
+            const cursorStart = {
+              line: cursor.line,
+              ch: index,
+            };
+            const cursorEnd = {
+              line: cursor.line,
+              ch: indexEnd,
+            };
+            editor.replaceRange(newItem, cursorStart, cursorEnd);
+          }
+        }
+      }
+    }
+  }
 }
